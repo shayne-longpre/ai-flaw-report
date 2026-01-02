@@ -1,213 +1,306 @@
+"""
+AI Flaw Report to VINCE Format Transformer
+Converts AI Flaw Report JSON structure to VINCE vulnerability report format
+"""
+
+from datetime import datetime
+from typing import Dict, List, Any, Optional
 import json
-from pathlib import Path
-from datetime import datetime, timezone
 
-def _load_any(obj):
+
+def get_systems_array(reporter_details: Dict) -> List[str]:
     """
-    Accept dict, path to JSON file, or JSON string.
-    Return a Python dict.
+    Extract all systems from the reporter details into a single array.
+    Combines platform, platforms, and models fields.
     """
-    if isinstance(obj, dict):
-        return obj
-    if isinstance(obj, (str, Path)):
-        p = Path(str(obj))
-        if p.exists():
-            with open(p, "r", encoding="utf-8") as f:
-                return json.load(f)
+    systems = []
+    
+    system_info = reporter_details.get('system', {})
+    
+    if system_info.get('platform'):
+        systems.append(system_info['platform'])
+    
+    if system_info.get('platforms'):
+        systems.extend(system_info['platforms'])
+    
+    if system_info.get('models'):
+        systems.extend(system_info['models'])
+    
+    return systems
+
+
+def build_vul_description(ai_report: Dict) -> str:
+    """
+    Aggregate multiple fields into a comprehensive vulnerability description.
+    """
+    parts = []
+    
+    # Metadata
+    metadata = ai_report.get('metadata', {})
+    if metadata:
+        parts.append(f"Report Type: {metadata.get('reportType', 'N/A')}")
+        parts.append(f"Created At: {metadata.get('createdAt', 'N/A')}")
+    
+    # Issue description
+    incident_desc = ai_report.get('incidentDescription', {})
+    if incident_desc.get('issueDescription'):
+        parts.append(f"\nIssue Description:\n{incident_desc['issueDescription']}")
+    
+    # Policy violation
+    policy_violation = incident_desc.get('policyViolation', {})
+    if policy_violation.get('reason'):
+        parts.append(f"\nPolicy Violation Reason:\n{policy_violation['reason']}")
+    
+    # Impact assessment
+    impact = ai_report.get('impactAssessment', {})
+    if impact:
+        parts.append(f"\nSeverity: {impact.get('severityOfHarm', 'N/A')}")
+        parts.append(f"Prevalence: {impact.get('prevalence', 'N/A')}")
+        parts.append(f"Harm Type: {impact.get('harmType', 'N/A')}")
+        
+        if impact.get('harmTypes'):
+            parts.append(f"Specific Harm Types: {', '.join(impact['harmTypes'])}")
+        
+        if impact.get('affectedStakeholders'):
+            parts.append(f"Affected Stakeholders: {', '.join(impact['affectedStakeholders'])}")
+        
+        if impact.get('documentedHarmCwe'):
+            parts.append(f"CWE Classification: {impact['documentedHarmCwe']}")
+        
+        if impact.get('harmOtherText'):
+            parts.append(f"Additional Harm Details: {impact['harmOtherText']}")
+    
+    return "\n".join(parts)
+
+
+def build_vul_exploit(ai_report: Dict) -> str:
+    """
+    Build the vulnerability exploit description.
+    Combines reproduction steps and attacker resources.
+    """
+    parts = []
+    
+    # Steps to reproduce
+    evidence = ai_report.get('evidence', {})
+    if evidence.get('stepsToReproduce'):
+        parts.append(f"Steps to Reproduce:\n{evidence['stepsToReproduce']}")
+    
+    # Attacker resources
+    security = ai_report.get('securityDetails', {})
+    if security.get('attackerResources'):
+        parts.append(f"\nAttacker Resources Required:\n{security['attackerResources']}")
+    
+    return "\n\n".join(parts) if parts else "See vulnerability description for details."
+
+
+def build_vul_impact(ai_report: Dict) -> str:
+    """
+    Build the vulnerability impact description.
+    """
+    security = ai_report.get('securityDetails', {})
+    classify = ai_report.get('classifyReport', {})
+    
+    if classify.get('malicious_use'):
+        parts = []
+        
+        if security.get('attackerObjectives'):
+            parts.append(f"Attacker Objectives: {security['attackerObjectives']}")
+        
+        # Add context from policy violation
+        incident = ai_report.get('incidentDescription', {})
+        policy = incident.get('policyViolation', {})
+        if policy.get('reason'):
+            parts.append(f"\nContext: {policy['reason']}")
+        
+        return "\n".join(parts) if parts else "Malicious use potential identified."
+    else:
+        return "N/A - This vulnerability does not involve a malign actor."
+
+
+def build_vul_discovery(ai_report: Dict) -> str:
+    """
+    Build the vulnerability discovery description.
+    """
+    parts = []
+    
+    # Discovery narrative
+    security = ai_report.get('securityDetails', {})
+    if security.get('discoveryNarrative'):
+        parts.append(f"Discovery Narrative:\n{security['discoveryNarrative']}")
+    
+    # Reproduction steps
+    evidence = ai_report.get('evidence', {})
+    if evidence.get('stepsToReproduce'):
+        parts.append(f"\nReproduction Steps:\n{evidence['stepsToReproduce']}")
+    
+    return "\n\n".join(parts) if parts else "See evidence section for details."
+
+
+def build_disclosure_plans(ai_report: Dict) -> str:
+    """
+    Build the disclosure plans description.
+    """
+    disclosure = ai_report.get('disclosurePlan', {})
+    
+    if not disclosure:
+        return ""
+    
+    parts = []
+    
+    if disclosure.get('publicDisclosureIntent'):
+        parts.append(f"Public Disclosure Intent: {disclosure['publicDisclosureIntent']}")
+    
+    if disclosure.get('disclosureTimeline'):
+        parts.append(f"Timeline: {disclosure['disclosureTimeline']}")
+    
+    if disclosure.get('disclosureDatepicker'):
         try:
-            return json.loads(str(obj))
-        except json.JSONDecodeError as e:
-            raise TypeError(
-                "Input must be a dict, a path to a JSON file, or a JSON string."
-            ) from e
-    raise TypeError("Input must be a dict, a path to a JSON file, or a JSON string.")
+            date_obj = datetime.fromisoformat(disclosure['disclosureDatepicker'].replace('Z', '+00:00'))
+            formatted_date = date_obj.strftime('%Y-%m-%d')
+            parts.append(f"Planned Disclosure Date: {formatted_date}")
+        except:
+            parts.append(f"Planned Disclosure Date: {disclosure['disclosureDatepicker']}")
+    
+    if disclosure.get('embargoDetails'):
+        parts.append(f"Embargo Details: {disclosure['embargoDetails']}")
+    
+    return "\n".join(parts)
 
-def _first(lst, default=None):
-    if isinstance(lst, list) and lst:
-        return lst[0]
-    return default
 
-def _collect_system_info(data: dict):
+def determine_ics_impact(ai_report: Dict) -> bool:
     """
-    Returns (product_name, product_version, vendor_name).
-    Handles both raw and JSON-LD shapes.
+    Determine if this affects industrial control systems or operational technology.
+    Returns True if affected stakeholders include critical infrastructure indicators.
     """
-    # Defaults
-    product_name = "Unknown System"
-    product_version = ""
-    vendor_name = "AI Flaw Reporting"
+    impact = ai_report.get('impactAssessment', {})
+    stakeholders = impact.get('affectedStakeholders', [])
+    
+    critical_indicators = ['critical_systems', 'critical_infrastructure', 'operational_technology']
+    
+    return any(indicator in str(stakeholders).lower() for indicator in critical_indicators)
 
-    # RAW (form) shape: "Systems": ["GPT-3.5-Turbo", ...]
-    if "Systems" in data and isinstance(data["Systems"], list) and data["Systems"]:
-        product_name = data["Systems"][0]
 
-    # JSON-LD shape: "aiSystem": [{ "name": "...", "version": "...", "publisher": {...}}]
-    elif "aiSystem" in data:
-        sys0 = _first(data.get("aiSystem", []), {})
-        if isinstance(sys0, dict):
-            product_name = sys0.get("name", product_name)
-            product_version = sys0.get("version", product_version)
-            pub = sys0.get("publisher") or sys0.get("schema:publisher")
-            if isinstance(pub, dict):
-                vendor_name = pub.get("name", vendor_name)
-
-    return product_name, product_version, vendor_name
-
-def _get_list(data: dict, *keys):
-    for k in keys:
-        if k in data and isinstance(data[k], list):
-            return data[k]
-    return []
-
-def _get_str(data: dict, *keys, default=""):
-    for k in keys:
-        v = data.get(k)
-        if isinstance(v, str) and v.strip() != "":
-            return v
-    return default
-
-def _get_from_nested(data: dict, path: list, default=None):
-    cur = data
-    for key in path:
-        if isinstance(cur, dict) and key in cur:
-            cur = cur[key]
-        else:
-            return default
-    return cur
-
-def _string_bool(val, truthy={"yes", "true", "1"}):
+def transform_to_vince(ai_report: Dict) -> Dict[str, Any]:
     """
-    Convert various inputs to 'True'/'False' strings (CERT fields use string booleans).
+    Transform an AI Flaw Report JSON to VINCE format.
+    
+    Args:
+        ai_report: Dictionary containing the AI Flaw Report data
+        
+    Returns:
+        Dictionary in VINCE format
     """
-    if isinstance(val, bool):
-        return "True" if val else "False"
-    if isinstance(val, str):
-        return "True" if val.strip().lower() in truthy else "False"
-    return "False"
-
-def convert_to_cert_json(raw_or_path) -> dict:
-    """
-    Convert AI flaw report (raw form JSON or JSON-LD) into CERT VRF-like JSON format.
-    Accepts dict, path to JSON file, or JSON string.
-    """
-    data = _load_any(raw_or_path)
-
-    product_name, product_version, vendor_name = _collect_system_info(data)
-
-    vul_description = _get_str(
-        data,
-        "Flaw Description",
-        "Incident Description",
-        "Incident Description - Detailed",
-        "Flaw Description - Detailed",
-        default=data.get("description", "")
-    )
-
-    vul_exploit = _get_str(data, "Proof-of-Concept Exploit", default="")
-    if not vul_exploit:
-        vul_exploit = _get_from_nested(
-            data, ["aifr:vulnerability", "aifr:proofOfConcept"], default=""
-        )
-
-    impacts_list = _get_list(data, "Impacts", "impacts")
-    vul_impact = ", ".join(impacts_list) if impacts_list else ""
-
-    # Discovery context
-    vul_discovery = _get_str(data, "Context Info", default=data.get("aifr:contextInfo", ""))
-
-    # Disclosure intent & timeline
-    disclosure_intent = (
-        _get_str(data, "Disclosure Intent", default=None)
-        or _get_from_nested(data, ["aifr:disclosure", "aifr:intent"], default="")
-    )
-    disclosure_timeline = (
-        _get_str(data, "Disclosure Timeline", default=None)
-        or _get_from_nested(data, ["aifr:disclosure", "aifr:timeline"], default="")
-    )
-
-    # Submission meta
-    report_id = _get_str(data, "Report ID", "identifier", default=None)
-    submitted = _get_str(
-        data,
-        "Submission Timestamp",
-        "dateCreated",
-        default=datetime.now(timezone.utc).isoformat()
-    )
-    reporter_id = _get_str(data, "Reporter ID", default="")
-    if not report_id:
-        # JSON-LD often puts it in @id like "https://.../reports/<id>"
-        atid = data.get("@id", "")
-        if isinstance(atid, str) and atid.rsplit("/", 1)[-1]:
-            report_id = atid.rsplit("/", 1)[-1]
-        else:
-            report_id = f"VRF-{datetime.now(timezone.utc).strftime('%y-%m-%d-%H%M%S')}"
-
-    submitted = _get_str(
-        data,
-        "Submission Timestamp",
-        "dateCreated",
-        default=datetime.now(timezone.utc).isoformat()
-    )
-
-    report_types = _get_list(data, "Report Types", "reportType")
-    submission_type = _first(report_types, "Vulnerability Report")
-
-    title = f"[VRF#{report_id}] {product_name}"
-
-    cert_json = {
-        'contact_name': reporter_id,
-        'contact_org': '',
-        'contact_email': '',
-        'contact_phone': '',
-        'share_release': 'False',
-        'credit_release': 'False',
-        'coord_status': [],
-
-        'vendor_name': vendor_name or 'Central Services',
-        'multiplevendors': 'False',
-        'other_vendors': '',
-        'first_contact': None,
-        'vendor_communication': '',
-
-        'product_name': product_name,
-        'product_version': product_version or '',
-
-        'ics_impact': False,
-        'metadata': {'ai_ml_system': True}, 
-        'vul_description': vul_description,
-        'vul_exploit': vul_exploit,
-        'vul_impact': vul_impact,
-        'vul_discovery': vul_discovery,
-        'vul_public': 'False',
-        'public_references': '',
-        'vul_exploited': 'False',
-        'exploit_references': '',
-        'vul_disclose': _string_bool(disclosure_intent),
-        'disclosure_plans': disclosure_timeline or '',
-        'tracking': '',
-        'comments': _get_str(data, "Harm Narrative", default=""),
-        'reporter_pgp': '',
-        'comm_attempt': 'False',
-        'why_no_attempt': '',
-        'please_explain': '',
-
-        'ai_ml_system': True,
-        'cisa_please': False,
-
-        'vrf_id': report_id,
-        'vrf_date_submitted': submitted,
-        'remote_addr': '127.0.0.1',
-        'remote_host': 'unknown',
-        'http_user_agent': 'Unknown',
-        'http_referer': 'https://bigvince-devtest-kb.testdit.org/vuls/vulcoordrequest/',
-        'submission_type': submission_type,
-        'title': title,
-        'user_file': None,
+    systems = get_systems_array(ai_report.get('reporterDetails', {}))
+    
+    multiplevendors = len(systems) > 1
+    
+    product_name = systems[0] if systems else "Unknown System"
+    other_vendors = "\r\n".join(systems[1:]) if len(systems) > 1 else ""
+    
+    product_version = "\r\n".join(systems) if systems else "Not specified"
+    
+    reporter_details = ai_report.get('reporterDetails', {})
+    reporter = reporter_details.get('reporter', {})
+    contact_email = reporter.get('email', '')
+    
+    classify = ai_report.get('classifyReport', {})
+    vul_exploited = classify.get('real_world_harm', False)
+    
+    disclosure = ai_report.get('disclosurePlan', {})
+    has_embargo = bool(disclosure.get('embargoDetails', '').strip())
+    vul_disclose = disclosure.get('publicDisclosureIntent', '').lower() == 'yes' and not has_embargo
+    
+    vince_report = {
+        "comm_attempt": False,
+        
+        "first_contact": "",
+        "vendor_communication": "",
+        
+        "why_no_attempt": "3", 
+        "please_explain": "Vulnerability report forwarded from the AI Flaw Report form.",
+        
+        "vendor_name": "",
+        
+        "multiplevendors": multiplevendors,
+        
+        "other_vendors": other_vendors,
+        
+        "product_name": product_name,
+        
+        "product_version": product_version,
+        
+        "ics_impact": determine_ics_impact(ai_report),
+        
+        "ai_ml_system": True,
+        
+        "vul_description": build_vul_description(ai_report),
+        
+        "vul_exploit": build_vul_exploit(ai_report),
+        
+        "vul_impact": build_vul_impact(ai_report),
+        
+        "vul_discovery": build_vul_discovery(ai_report),
+        
+        "vul_public": False,
+        
+        "public_references": "",
+        
+        "vul_exploited": vul_exploited,
+        
+        "exploit_references": "",
+        
+        "vul_disclose": vul_disclose,
+        
+        "disclosure_plans": build_disclosure_plans(ai_report),
+        
+        "user_file": "",
+        
+        "contact_name": "",
+        
+        "contact_org": "",
+        
+        "contact_email": contact_email,
+        
+        "contact_phone": "",
+        
+        "share_release": False,
+        
+        "credit_release": False,
+        
+        "reporter_pgp": "",
+        
+        "tracking": "",
+        
+        "comments": "",
+        
+        "cisa_please": False
     }
+    
+    return vince_report
 
-    return cert_json
+
+def transform_to_vince_json(ai_report_json: str) -> str:
+    """
+    Transform an AI Flaw Report JSON string to VINCE format JSON string.
+    
+    Args:
+        ai_report_json: JSON string containing the AI Flaw Report data
+        
+    Returns:
+        JSON string in VINCE format
+    """
+    import json
+    
+    ai_report = json.loads(ai_report_json)
+    vince_report = transform_to_vince(ai_report)
+    
+    return json.dumps(vince_report, indent=2)
+
 
 if __name__ == "__main__":
-    ai_flaw_example = "/Users/elainezhu/Downloads/ai_flaw_report_ef6fa01c-fccd-4430-b81f-d8953d3f70f0.json"
-    cert_report = convert_to_cert_json(ai_flaw_example)
-    print(json.dumps(cert_report, indent=2))
+    ai_flaw_example = "/Users/elainezhu/Downloads/ai-flaw-report.json"
+    
+    with open(ai_flaw_example, 'r') as f:
+        ai_report = json.load(f)
+    vince_report = transform_to_vince(ai_report)
+    print(json.dumps(vince_report, indent=2))
